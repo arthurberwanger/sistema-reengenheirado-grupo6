@@ -1,0 +1,85 @@
+name: Pipeline de Evolucao Segura (CI/CD)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  quality-gates:
+    name: SonarCloud e Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Compilar, executar testes e gerar cobertura
+        run: mvn -B verify
+
+      - name: SonarCloud e Quality Gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        run: >-
+          mvn -B org.sonarsource.scanner.maven:sonar-maven-plugin:5.8.0.7211:sonar
+          -Dsonar.organization="$SONAR_ORGANIZATION"
+          -Dsonar.projectKey="$SONAR_PROJECT_KEY"
+          -Dsonar.qualitygate.wait=true
+
+      - name: Trivy - vulnerabilidades nas dependencias do repositorio
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          vuln-type: os,library
+          ignore-unfixed: true
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+
+      - name: Trivy - imagem base de execucao
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: eclipse-temurin:17-jre-alpine
+          vuln-type: os,library
+          ignore-unfixed: true
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+  build-and-push:
+    name: Build e Push para Docker Hub
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v7
+
+      - name: Login no Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build e Push da imagem versionada
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/sistema-reengenheirado:${{ github.ref_name }}
